@@ -1,0 +1,33 @@
+sequenceDiagram
+participant User
+participant Client
+participant Server
+
+activate User
+User ->> +Client: Register
+Client->>Client: Seal(principal, password)
+Client->>+Server: Public key
+Server->>Server: Create user
+Server-->>Client: Ok
+deactivate Server
+Client-->>User: Ok
+deactivate Client
+deactivate User
+
+activate User
+User->>+Client: Login
+Client->>Client: Seal(principal, password)
+Client->>+Server: Get Challenge
+Server->>Server: Forge(principal)
+Server->>Server: Store SessionID and principal
+Server-->>Client: Challenge
+deactivate Server
+Client->>Client: Meld(principal, password, challenge)
+Client->>+Server: Send Challenge response
+Server->>Server: Check challenge existence (principal, sessionID, expiration)
+Server->>Server: Check challenge signature
+Server-->>Client: Ok
+deactivate Server
+Client-->>User: Ok
+deactivate Client
+deactivate User
