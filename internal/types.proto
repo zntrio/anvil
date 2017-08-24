@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+// Package internal holds protobuf types used by the server
+package internal;
+
+// Challenge is the authentication challenge to be used by client
+message Challenge {
+  string session_id = 1;
+  int64 issued_at = 2;
+  int64 expiration = 3;
+  string principal = 4;
+}

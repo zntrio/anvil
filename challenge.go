@@ -1,15 +1,20 @@
 package anvil
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/dchest/uniuri"
-	"github.com/golang/snappy"
-
 	"golang.org/x/crypto/ed25519"
+
+	"go.zenithar.org/anvil/forge"
+	"go.zenithar.org/anvil/internal"
+)
+
+var (
+	// ErrExpiredChallenge raised when trying to tap an expired challenge
+	ErrExpiredChallenge = errors.New("anvil: Challenge is expired")
 )
 
 // Meld a challenge from given credentials
@@ -33,59 +38,79 @@ func Meld(principal, password, challenge string) (string, error) {
 }
 
 // Forge a challenge
-func Forge(principal string) (string, error) {
-	// Generate a token
-	claims := map[string]interface{}{
-		"n": uniuri.NewLen(20),
-		"i": time.Now().UTC().Unix(),
-		"e": time.Now().Add(2 * time.Minute).UTC().Unix(),
-		"p": principal,
+func Forge(principal string, opts ...forge.Option) (string, string, error) {
+	// Default Setings
+	dopts := &forge.Options{
+		IDGenerator: forge.DefaultSessionGenerator,
+		Expiration:  2 * time.Minute,
 	}
 
-	// Encode to JSON
-	payload, err := json.Marshal(&claims)
-	if err != nil {
-		return "", fmt.Errorf("anvil: Unable to generate a challenge for given principal, %v", err)
+	// Apply param functions
+	for _, o := range opts {
+		o(dopts)
 	}
+
+	// Build the challenge
+	challenge := internal.Challenge{
+		SessionId:  dopts.IDGenerator(),
+		Principal:  principal,
+		IssuedAt:   time.Now().UTC().Unix(),
+		Expiration: time.Now().Add(dopts.Expiration).UTC().Unix(),
+	}
+
+	// Marshal challenge
+	payload, err := internal.Marshal(&challenge)
 
 	// Return challenge
-	return toOKP(snappy.Encode(nil, payload)), nil
+	return payload, challenge.SessionId, err
 }
 
 // Tap checks for challenge
-func Tap(token string) (bool, error) {
+func Tap(token string) (bool, string, string, error) {
 	// Split challenge in parts
 	parts := strings.SplitN(token, ".", 3)
 
 	// Must have 3 parts (publicKey, challenge, signature)
 	if len(parts) != 3 {
-		return false, fmt.Errorf("anvil: Invalid challenge, it must contains 3 parts")
+		return false, "", "", fmt.Errorf("anvil: Invalid challenge, it must contains 3 parts")
 	}
 
 	// Decode PublicKey
 	publicKeyRaw, err := fromOKP(parts[0])
 	if err != nil {
-		return false, fmt.Errorf("anvil: Invalid public key, %v", err)
+		return false, "", "", fmt.Errorf("anvil: Invalid public key, %v", err)
 	}
 	if len(publicKeyRaw) != ed25519.PublicKeySize {
-		return false, fmt.Errorf("anvil: Invalid public key size")
+		return false, "", "", fmt.Errorf("anvil: Invalid public key size")
 	}
 
 	// Decode challenge
 	tokenRaw, err := fromOKP(parts[1])
 	if err != nil {
-		return false, fmt.Errorf("anvil: Invalid challenge, could not decode body, %v", err)
+		return false, "", "", fmt.Errorf("anvil: Unable to decode challenge, %v", err)
 	}
 
 	// Decode signature
 	signatureRaw, err := fromOKP(parts[2])
 	if err != nil {
-		return false, fmt.Errorf("anvil: Invalid challenge signature encoding, %v", err)
+		return false, "", "", fmt.Errorf("anvil: Invalid challenge signature encoding, %v", err)
 	}
 	if len(signatureRaw) != ed25519.SignatureSize {
-		return false, fmt.Errorf("anvil: Invalid challenge signature size")
+		return false, "", "", fmt.Errorf("anvil: Invalid challenge signature size")
+	}
+
+	// Umarshal challenge
+	var challenge internal.Challenge
+	err = internal.Unmarshal(parts[1], &challenge)
+	if err != nil {
+		return false, "", "", fmt.Errorf("anvil: Unable to unmarshall challenge, %v", err)
+	}
+
+	// Check challenge expiration
+	if challenge.IsExpired() {
+		return false, challenge.SessionId, challenge.Principal, ErrExpiredChallenge
 	}
 
 	// Check ed25519 signature
-	return ed25519.Verify(publicKeyRaw[:], tokenRaw, signatureRaw), nil
+	return ed25519.Verify(publicKeyRaw[:], tokenRaw, signatureRaw), challenge.SessionId, challenge.Principal, nil
 }
