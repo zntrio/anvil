@@ -1,20 +1,14 @@
 package anvil
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/ed25519"
-
 	"go.zenithar.org/anvil/forge"
 	"go.zenithar.org/anvil/internal"
-)
-
-var (
-	// ErrExpiredChallenge raised when trying to tap an expired challenge
-	ErrExpiredChallenge = errors.New("anvil: Challenge is expired")
+	"go.zenithar.org/anvil/tap"
+	"golang.org/x/crypto/ed25519"
 )
 
 // Meld a challenge from given credentials
@@ -43,6 +37,7 @@ func Forge(principal string, opts ...forge.Option) (string, string, error) {
 	dopts := &forge.Options{
 		IDGenerator: forge.DefaultSessionGenerator,
 		Expiration:  2 * time.Minute,
+		Encryptor:   forge.DefaultEncryptor,
 	}
 
 	// Apply param functions
@@ -60,13 +55,32 @@ func Forge(principal string, opts ...forge.Option) (string, string, error) {
 
 	// Marshal challenge
 	payload, err := internal.Marshal(&challenge)
+	if err != nil {
+		return "", "", fmt.Errorf("anvil: Unable to marshal challenge, %v", err)
+	}
+
+	// Pass to encryptor
+	content, err := dopts.Encryptor(payload)
+	if err != nil {
+		return "", "", fmt.Errorf("anvil: Unable to encrypt challenge, %v", err)
+	}
 
 	// Return challenge
-	return payload, challenge.SessionId, err
+	return toOKP(content), challenge.SessionId, err
 }
 
 // Tap checks for challenge
-func Tap(token string) (bool, string, string, error) {
+func Tap(token string, opts ...tap.Option) (bool, string, string, error) {
+	// Default settings
+	dopts := tap.Options{
+		Decryptor: tap.DefaultDecryptor,
+	}
+
+	// Apply Options
+	for _, o := range opts {
+		o(&dopts)
+	}
+
 	// Split challenge in parts
 	parts := strings.SplitN(token, ".", 3)
 
@@ -99,9 +113,15 @@ func Tap(token string) (bool, string, string, error) {
 		return false, "", "", fmt.Errorf("anvil: Invalid challenge signature size")
 	}
 
+	// Preporcess tokenRaw
+	content, err := dopts.Decryptor(tokenRaw)
+	if err != nil {
+		return false, "", "", fmt.Errorf("anvil: Invalid challenge encoding, %v", err)
+	}
+
 	// Umarshal challenge
 	var challenge internal.Challenge
-	err = internal.Unmarshal(parts[1], &challenge)
+	err = internal.Unmarshal(content, &challenge)
 	if err != nil {
 		return false, "", "", fmt.Errorf("anvil: Unable to unmarshall challenge, %v", err)
 	}
