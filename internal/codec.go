@@ -18,7 +18,7 @@
 package internal
 
 import (
-	"github.com/gogo/protobuf/proto"
+	"github.com/golang/protobuf/proto"
 )
 
 // Marshal converts a protobuf message to a URL legal string.
